@@ -40,6 +40,9 @@ Dropout(0.2) after first two hidden layers
 - Survival penalty: adaptive — decreases as snake grows (longer snake gets more planning time)
 - Collisions: −10 for wall or self
 
+#### Training Progress
+![Training Progress](graphs/training_progress.png)
+
 ## ⚙️ Training Configuration (Current)
 - Episodes: 100,000
 - Batch size: 128
