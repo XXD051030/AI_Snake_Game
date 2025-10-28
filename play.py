@@ -26,7 +26,9 @@ def play_with_ai(model_path="models/snake_model_final.pth", fps=10, show_grid=Tr
     
     # Track stats
     best_score = 0
-    total_games = 0
+    total_games = 0  # kept for UI, will mirror round_count
+    round_count = 0
+    score_sum = 0
     
     # Load trained model
     try:
@@ -102,15 +104,7 @@ def play_with_ai(model_path="models/snake_model_final.pth", fps=10, show_grid=Tr
             # AI chooses action
             action = agent.act(state)
             
-            # Debug: 显示AI的Q值预测（可选）
-            if game.snake_length <= 3:  # 只在蛇短时显示
-                import torch
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(agent.device)
-                with torch.no_grad():
-                    q_values = agent.q_network(state_tensor)
-                action_names = ['UP', 'RIGHT', 'DOWN', 'LEFT']
-                if game.snake_length == 2:  # 刚吃完第一个
-                    print(f"Q-values after eating 1st food: {action_names[action]}={q_values[0][action].item():.2f}")
+            # (Removed) Q-value debug prints
             
             # Execute action
             reward, done, ate_food = game.move(action)
@@ -142,16 +136,18 @@ def play_with_ai(model_path="models/snake_model_final.pth", fps=10, show_grid=Tr
                 stuck_counter = 0
                 last_score = current_score
             
-            # 如果卡住超过100步，自动重启
+            # 如果卡住超过100步，视为一局结束（loop-detected），自动重启
             if stuck_counter >= max_stuck_steps:
-                print(f"AI stuck for {max_stuck_steps} steps! Auto-restarting...")
+                final_score = game.snake_length - 1
+                round_count += 1
+                score_sum += final_score
+                print(f"Round {round_count} — Score: {final_score} | Reason: loop-detected")
                 game.reset()
                 position_history.clear()
                 action_history.clear()
                 loop_detected = False
                 stuck_counter = 0
                 last_score = 0
-                total_games += 1
         
         # Render game
         screen.fill((20, 20, 20))  # Dark background
@@ -204,8 +200,8 @@ def play_with_ai(model_path="models/snake_model_final.pth", fps=10, show_grid=Tr
         y_pos += 50
         
         # Stats
-        total_games += 1 if game.is_game_over else 0
-        games_text = font.render(f"Games: {total_games}", True, (150, 150, 150))
+        total_games = round_count
+        games_text = font.render(f"Games: {round_count}", True, (150, 150, 150))
         screen.blit(games_text, (info_x, y_pos))
         y_pos += 30
         
@@ -265,19 +261,19 @@ def play_with_ai(model_path="models/snake_model_final.pth", fps=10, show_grid=Tr
         
         # Handle game over
         if game.is_game_over:
-            # 显示游戏结束原因
+            # Round end on death — print standardized English message
             final_score = game.snake_length - 1
             death_reason = getattr(game, 'death_reason', 'unknown')
-            reason_text = {
-                'wall': '撞墙',
-                'self': '撞到自己',
-                'unknown': '未知原因'
-            }.get(death_reason, '未知原因')
-            
-            print(f"Game Over! Score: {final_score}, Reason: {reason_text}")
-            if final_score > 0:
-                print(f"  Snake ate {final_score} food(s) before dying")
-            
+            reason_map = {
+                'self': 'self-collision',
+                'wall': 'hit wall',
+                'unknown': 'unknown'
+            }
+            round_count += 1
+            score_sum += final_score
+            reason_en = reason_map.get(death_reason, 'unknown')
+            print(f"Round {round_count} — Score: {final_score} | Reason: {reason_en}")
+
             pygame.time.wait(2000)
             game.reset()
             position_history.clear()
@@ -285,12 +281,10 @@ def play_with_ai(model_path="models/snake_model_final.pth", fps=10, show_grid=Tr
             loop_detected = False
             stuck_counter = 0
             last_score = 0
-            total_games += 1
     
     pygame.quit()
-    print(f"\nFinal stats:")
-    print(f"  Best score: {best_score}")
-    print(f"  Total games: {total_games}")
+    avg_score = (score_sum / round_count) if round_count > 0 else 0.0
+    print(f"\nFinal stats — Games: {round_count}, Best score: {best_score}, Avg score: {avg_score:.2f}")
 
 
 if __name__ == "__main__":
