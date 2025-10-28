@@ -231,17 +231,6 @@ def train_snake_ai(
             print(f"VRAM: {vram_gb:.1f} GB | PyTorch: {torch_ver}")
         except Exception as e:
             print(f"GPU info unavailable: {e}")
-    # Print consolidated system info to console
-    print("-" * 50)
-    print(f"OS: {system_info['os']['system']} {system_info['os']['release']}")
-    print(f"Python: {system_info['python']} | Git: {git_branch or 'n/a'}@{git_commit or 'n/a'}")
-    print(f"CPU: {cpu_name or 'n/a'} | logical={cpu_logical} physical={cpu_physical or 'n/a'}"
-          f" | freq={cpu_freq_cur or 'n/a'}MHz max={cpu_freq_max or 'n/a'}MHz")
-    if mem_total_gb and mem_avail_gb:
-        print(f"Memory: total={mem_total_gb:.2f}GB available={mem_avail_gb:.2f}GB")
-    if gpu_count:
-        print(f"GPU: {gpu_name or 'n/a'} | vram={gpu_vram_gb:.1f}GB | capability={gpu_capability or 'n/a'} | CUDA={cuda_ver or 'n/a'} | torch={torch_ver}")
-    print(f"Parallel: num_workers={num_workers} | torch_threads={torch.get_num_threads()} | affinity={affinity_cores or 'n/a'}")
     
     # Create log directory and file
     os.makedirs("logs", exist_ok=True)
@@ -347,6 +336,18 @@ def train_snake_ai(
             "effective_units": (num_workers or 0) + 1,
         }
     }
+
+    # Print consolidated system info to console (after variables are defined)
+    print("-" * 50)
+    print(f"OS: {system_info['os']['system']} {system_info['os']['release']}")
+    print(f"Python: {system_info['python']} | Git: {git_branch or 'n/a'}@{git_commit or 'n/a'}")
+    print(f"CPU: {cpu_name or 'n/a'} | logical={cpu_logical} physical={cpu_physical or 'n/a'}"
+          f" | freq={cpu_freq_cur or 'n/a'}MHz max={cpu_freq_max or 'n/a'}MHz")
+    if mem_total_gb and mem_avail_gb:
+        print(f"Memory: total={mem_total_gb:.2f}GB available={mem_avail_gb:.2f}GB")
+    if gpu_count:
+        print(f"GPU: {gpu_name or 'n/a'} | vram={gpu_vram_gb:.1f}GB | capability={gpu_capability or 'n/a'} | CUDA={cuda_ver or 'n/a'} | torch={torch_ver}")
+    print(f"Parallel: num_workers={num_workers} | torch_threads={torch.get_num_threads()} | affinity={affinity_cores or 'n/a'}")
 
     # Initialize log data
     log_data = {
