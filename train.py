@@ -302,6 +302,32 @@ def train_snake_ai(
 
     git_branch, git_commit = _get_git_info()
 
+    # Capture run configuration
+    run_config = {
+        "mode": mode,
+        "model_path": model_path,
+        "reset_epsilon": reset_epsilon,
+        "episodes": episodes,
+        "visualize": visualize,
+        "batch_size": batch_size,
+        "lr": lr,
+        "gamma": gamma,
+        "epsilon_start": epsilon_start,
+        "epsilon_min": epsilon_min,
+        "epsilon_decay": epsilon_decay,
+        "target_update": target_update,
+        "replay_size": replay_size,
+        "checkpoint_interval": checkpoint_interval,
+        "log_interval": log_interval,
+        "device_arg": device,
+        "seed": seed,
+        "grid_size": grid_size,
+        "max_steps_per_episode": max_steps_per_episode,
+        "save_prefix": save_prefix,
+        "num_workers": num_workers,
+        "rollout_steps_per_worker": rollout_steps_per_worker,
+    }
+
     system_info = {
         "os": {
             "system": platform.system(),
@@ -356,6 +382,7 @@ def train_snake_ai(
         "device": str(agent.device),
         "training_history": [],
         "system_info": system_info,
+        "config": run_config,
     }
     
     # Write initial log
@@ -373,6 +400,15 @@ def train_snake_ai(
         if gpu_count:
             f.write(f"# GPU: {gpu_name or 'n/a'} | vram={gpu_vram_gb:.1f}GB | capability={gpu_capability or 'n/a'} | CUDA={cuda_ver or 'n/a'} | torch={torch_ver}\n")
         f.write(f"# Parallel: num_workers={num_workers} (effective_units={system_info['parallel']['effective_units']})\n")
+        # Config block
+        f.write("# Config:\n")
+        for k in [
+            "mode","model_path","reset_epsilon","episodes","visualize","batch_size","lr","gamma",
+            "epsilon_start","epsilon_min","epsilon_decay","target_update","replay_size",
+            "checkpoint_interval","log_interval","device_arg","seed","grid_size",
+            "max_steps_per_episode","save_prefix","num_workers","rollout_steps_per_worker"
+        ]:
+            f.write(f"#   {k}={run_config[k]}\n")
         f.write("# Format: episode, avg_score, max_score, epsilon, memory_size, time_last_100, time_total, time_remaining, eps_per_s, steps_per_s\n")
         f.write("# episode,avg_score,max_score,epsilon,memory_size,time_last_100,time_total,time_remaining,eps_per_s,steps_per_s\n")
     
