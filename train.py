@@ -143,6 +143,20 @@ def train_snake_ai(
     print("Starting training...")
     print(f"Target episodes: {episodes}")
     print(f"Device: {agent.device}")
+    # GPU hardware information (if CUDA is used)
+    if hasattr(agent, 'device') and getattr(agent.device, 'type', '') == 'cuda':
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+            props = torch.cuda.get_device_properties(0)
+            vram_gb = props.total_memory / (1024 ** 3)
+            capability = f"{props.major}.{props.minor}"
+            torch_ver = torch.__version__
+            cuda_ver = torch.version.cuda or "unknown"
+            print(f"GPU: {gpu_name}")
+            print(f"CUDA: {cuda_ver} | Capability: {capability}")
+            print(f"VRAM: {vram_gb:.1f} GB | PyTorch: {torch_ver}")
+        except Exception as e:
+            print(f"GPU info unavailable: {e}")
     print("-" * 50)
     
     # Create log directory and file
@@ -163,12 +177,18 @@ def train_snake_ai(
         f.write(f"# Training started at {timestamp}\n")
         f.write(f"# Target episodes: {episodes}\n")
         f.write(f"# Device: {agent.device}\n")
-        f.write("# Format: episode, avg_score, max_score, epsilon, memory_size, time_last_100, time_total, time_remaining\n")
-        f.write("# episode,avg_score,max_score,epsilon,memory_size,time_last_100,time_total,time_remaining\n")
+        f.write("# Format: episode, avg_score, max_score, epsilon, memory_size, time_last_100, time_total, time_remaining, eps_per_s, steps_per_s\n")
+        f.write("# episode,avg_score,max_score,epsilon,memory_size,time_last_100,time_total,time_remaining,eps_per_s,steps_per_s\n")
     
     # Track time
     start_time = time.time()
-    last_checkpoint_time = start_time
+    last_checkpoint_time = start_time  # last log time
+    # Throughput tracking
+    total_steps = 0
+    last_logged_episode = -1
+    last_logged_steps = 0
+    eps_per_s_recent = 0.0
+    steps_per_s_recent = 0.0
     
     # Create main progress bar
     pbar = tqdm(total=episodes, desc="Training", unit="episode", ncols=100, miniters=10, maxinterval=1)
@@ -234,6 +254,7 @@ def train_snake_ai(
         scores.append(game.snake_length - 1)  # Score = snake length - 1
         max_scores.append(scores[-1])
         all_scores.append(scores[-1])
+        total_steps += steps
         
         # Update nested progress bar (for current chunk)
         if episode % log_interval == 0:
@@ -266,7 +287,9 @@ def train_snake_ai(
             pbar.set_postfix({
                 'avg': f'{current_avg:.2f}',
                 'max': current_max,
-                'eps': f'{agent.epsilon:.3f}'
+                'eps': f'{agent.epsilon:.3f}',
+                'eps/s': f'{eps_per_s_recent:.1f}',
+                'steps/s': f'{steps_per_s_recent:.0f}'
             })
         
             # Print progress
@@ -282,6 +305,13 @@ def train_snake_ai(
                 time_since_checkpoint = current_time - last_checkpoint_time
                 estimated_total_time = time_since_start * episodes / (episode + 1)
                 remaining_time = estimated_total_time - time_since_start
+                # Throughput since last log
+                episodes_since_last = 0 if last_logged_episode < 0 else (episode - last_logged_episode)
+                steps_since_last = total_steps - last_logged_steps
+                eps_per_s = (episodes_since_last / time_since_checkpoint) if time_since_checkpoint > 0 else 0.0
+                steps_per_s = (steps_since_last / time_since_checkpoint) if time_since_checkpoint > 0 else 0.0
+                eps_per_s_recent = eps_per_s
+                steps_per_s_recent = steps_per_s
                 
                 # Prepare log entry
                 log_entry = {
@@ -293,14 +323,16 @@ def train_snake_ai(
                     "memory_size": len(agent.memory),
                     "time_last_100": time_since_checkpoint,
                     "time_total": time_since_start,
-                    "time_remaining": remaining_time
+                    "time_remaining": remaining_time,
+                    "eps_per_s": float(eps_per_s),
+                    "steps_per_s": float(steps_per_s)
                 }
                 log_data["training_history"].append(log_entry)
                 
                 # Write to log file (one line per update)
                 with open(log_file, 'a') as f:
-                    # Format: episode, avg_score, max_score, epsilon, memory_size, time_last_100, time_total, time_remaining
-                    f.write(f"{episode},{avg_score:.2f},{max_score},{epsilon:.4f},{len(agent.memory)},{time_since_checkpoint:.2f},{time_since_start:.2f},{remaining_time:.2f}\n")
+                    # Format: episode, avg_score, max_score, epsilon, memory_size, time_last_100, time_total, time_remaining, eps_per_s, steps_per_s
+                    f.write(f"{episode},{avg_score:.2f},{max_score},{epsilon:.4f},{len(agent.memory)},{time_since_checkpoint:.2f},{time_since_start:.2f},{remaining_time:.2f},{eps_per_s:.2f},{steps_per_s:.0f}\n")
                 
                 print(f"Episode: {episode}/{episodes}")
                 print(f"  Average Score: {avg_score:.2f}")
@@ -311,11 +343,15 @@ def train_snake_ai(
                 print(f"  Time (last 100): {time_since_checkpoint:.2f}s")
                 print(f"  Time (total): {time_since_start:.2f}s")
                 print(f"  Estimated remaining: {remaining_time:.2f}s")
+                print(f"  Episodes/s: {eps_per_s:.2f}")
+                print(f"  Steps/s: {steps_per_s:.0f}")
                 print(f"  Log saved to: {log_file}")
                 print("-" * 50)
                 
-                # Update checkpoint time
+                # Update last-log trackers
                 last_checkpoint_time = current_time
+                last_logged_episode = episode
+                last_logged_steps = total_steps
         
         # Save model every checkpoint_interval episodes
         if episode % checkpoint_interval == 0 and episode > 0:
