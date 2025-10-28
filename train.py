@@ -17,6 +17,12 @@ import torch
 import random
 import multiprocessing as mp
 from queue import Empty as QueueEmpty
+import platform
+import subprocess
+try:
+    import psutil  # type: ignore
+except Exception:  # psutil optional; degrade gracefully
+    psutil = None
 
 
 def rollout_worker(worker_id: int,
@@ -225,19 +231,130 @@ def train_snake_ai(
             print(f"VRAM: {vram_gb:.1f} GB | PyTorch: {torch_ver}")
         except Exception as e:
             print(f"GPU info unavailable: {e}")
+    # Print consolidated system info to console
     print("-" * 50)
+    print(f"OS: {system_info['os']['system']} {system_info['os']['release']}")
+    print(f"Python: {system_info['python']} | Git: {git_branch or 'n/a'}@{git_commit or 'n/a'}")
+    print(f"CPU: {cpu_name or 'n/a'} | logical={cpu_logical} physical={cpu_physical or 'n/a'}"
+          f" | freq={cpu_freq_cur or 'n/a'}MHz max={cpu_freq_max or 'n/a'}MHz")
+    if mem_total_gb and mem_avail_gb:
+        print(f"Memory: total={mem_total_gb:.2f}GB available={mem_avail_gb:.2f}GB")
+    if gpu_count:
+        print(f"GPU: {gpu_name or 'n/a'} | vram={gpu_vram_gb:.1f}GB | capability={gpu_capability or 'n/a'} | CUDA={cuda_ver or 'n/a'} | torch={torch_ver}")
+    print(f"Parallel: num_workers={num_workers} | torch_threads={torch.get_num_threads()} | affinity={affinity_cores or 'n/a'}")
     
     # Create log directory and file
     os.makedirs("logs", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file = f"logs/training_{timestamp}.log"
     
+    # Collect system info for logs
+    def _get_git_info():
+        branch = commit = None
+        try:
+            branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
+        except Exception:
+            pass
+        try:
+            commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
+        except Exception:
+            pass
+        return branch, commit
+
+    def _bytes_gb(x):
+        try:
+            return float(x) / (1024 ** 3)
+        except Exception:
+            return None
+
+    cpu_logical = os.cpu_count() or 1
+    cpu_physical = None
+    cpu_freq_cur = cpu_freq_max = None
+    cpu_name = platform.processor() or None
+    mem_total_gb = mem_avail_gb = None
+    affinity_cores = None
+    if psutil is not None:
+        try:
+            cpu_physical = psutil.cpu_count(logical=False)
+        except Exception:
+            pass
+        try:
+            f = psutil.cpu_freq()
+            if f:
+                cpu_freq_cur = f.current
+                cpu_freq_max = f.max
+        except Exception:
+            pass
+        try:
+            vm = psutil.virtual_memory()
+            mem_total_gb = _bytes_gb(vm.total)
+            mem_avail_gb = _bytes_gb(vm.available)
+        except Exception:
+            pass
+        try:
+            affinity_cores = len(psutil.Process().cpu_affinity())
+        except Exception:
+            pass
+
+    gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    gpu_name = None
+    gpu_vram_gb = None
+    gpu_capability = None
+    cuda_ver = torch.version.cuda or None
+    torch_ver = torch.__version__
+    if hasattr(agent, 'device') and getattr(agent.device, 'type', '') == 'cuda':
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+            props = torch.cuda.get_device_properties(0)
+            gpu_vram_gb = _bytes_gb(props.total_memory)
+            gpu_capability = f"{props.major}.{props.minor}"
+        except Exception:
+            pass
+
+    git_branch, git_commit = _get_git_info()
+
+    system_info = {
+        "os": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "version": platform.version(),
+        },
+        "python": platform.python_version(),
+        "git": {"branch": git_branch, "commit": git_commit},
+        "cpu": {
+            "name": cpu_name,
+            "logical_cores": cpu_logical,
+            "physical_cores": cpu_physical,
+            "freq_current_mhz": cpu_freq_cur,
+            "freq_max_mhz": cpu_freq_max,
+            "affinity_cores": affinity_cores,
+            "torch_num_threads": torch.get_num_threads(),
+        },
+        "memory": {
+            "total_gb": mem_total_gb,
+            "available_gb": mem_avail_gb,
+        },
+        "gpu": {
+            "count": gpu_count,
+            "name": gpu_name,
+            "vram_gb": gpu_vram_gb,
+            "capability": gpu_capability,
+            "cuda": cuda_ver,
+            "pytorch": torch_ver,
+        },
+        "parallel": {
+            "num_workers": num_workers,
+            "effective_units": (num_workers or 0) + 1,
+        }
+    }
+
     # Initialize log data
     log_data = {
         "start_time": timestamp,
         "episodes": episodes,
         "device": str(agent.device),
-        "training_history": []
+        "training_history": [],
+        "system_info": system_info,
     }
     
     # Write initial log
@@ -245,6 +362,16 @@ def train_snake_ai(
         f.write(f"# Training started at {timestamp}\n")
         f.write(f"# Target episodes: {episodes}\n")
         f.write(f"# Device: {agent.device}\n")
+        # System info header
+        f.write(f"# OS: {system_info['os']['system']} {system_info['os']['release']}\n")
+        f.write(f"# Python: {system_info['python']} | Git: {git_branch or 'n/a'}@{git_commit or 'n/a'}\n")
+        f.write(f"# CPU: {cpu_name or 'n/a'} | logical={cpu_logical} physical={cpu_physical or 'n/a'}"
+                f" | freq={cpu_freq_cur or 'n/a'}MHz max={cpu_freq_max or 'n/a'}MHz"
+                f" | torch_threads={torch.get_num_threads()} | affinity={affinity_cores or 'n/a'}\n")
+        f.write(f"# Memory: total={mem_total_gb:.2f}GB available={mem_avail_gb:.2f}GB\n" if (mem_total_gb and mem_avail_gb) else "")
+        if gpu_count:
+            f.write(f"# GPU: {gpu_name or 'n/a'} | vram={gpu_vram_gb:.1f}GB | capability={gpu_capability or 'n/a'} | CUDA={cuda_ver or 'n/a'} | torch={torch_ver}\n")
+        f.write(f"# Parallel: num_workers={num_workers} (effective_units={system_info['parallel']['effective_units']})\n")
         f.write("# Format: episode, avg_score, max_score, epsilon, memory_size, time_last_100, time_total, time_remaining, eps_per_s, steps_per_s\n")
         f.write("# episode,avg_score,max_score,epsilon,memory_size,time_last_100,time_total,time_remaining,eps_per_s,steps_per_s\n")
     
