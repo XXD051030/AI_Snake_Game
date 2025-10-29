@@ -109,7 +109,7 @@ def train_snake_ai(
     grid_size: int = 20,
     max_steps_per_episode: int = 1000,
     save_prefix: str = "snake_model_",
-    num_workers: int = 2,
+    num_workers: int = 0,
     rollout_steps_per_worker: int = 200,
 ):
     """
@@ -770,7 +770,7 @@ if __name__ == "__main__":
     parser.add_argument("--epsilon-decay", type=float, default=0.9995, help="Epsilon decay factor")
     parser.add_argument("--target-update", type=int, default=50, help="Target network update interval (episodes)")
     parser.add_argument("--replay-size", type=int, default=100000, help="Replay buffer size")
-    parser.add_argument("--num-workers", type=int, default=2, help="Number of parallel CPU rollout workers")
+    parser.add_argument("--num-workers", type=int, default=0, help="Number of parallel CPU rollout workers")
     parser.add_argument("--rollout-steps-per-worker", type=int, default=200, help="Transitions per worker batch push")
     
     # Logging / saving

@@ -40,8 +40,8 @@
 ![训练进度](graphs/training_progress.png)
 
 ### v3.6 亮点：并行采样（多进程）
-- 默认启用：`--num-workers 2`，使用多个 CPU 进程并行收集样本
-- 关闭方法：`--num-workers 0`
+- 默认关闭：`--num-workers 0`（单进程；设 >0 启用并行采样）
+- 启用方法：将 `--num-workers` 设为 `> 0`
 - 吞吐：显著提升 steps/s 与训练更新频率；episodes/s 可能略降
 - 注意：Delete 键仅在主进程生效；训练结束会自动清理子进程
 
@@ -131,7 +131,7 @@ python train.py --device cuda \
   - `--epsilon-decay 浮点数`（默认 0.9995）
   - `--target-update 整数`（默认 50）
   - `--replay-size 整数`（默认 100000）
-  - `--num-workers 整数`（默认 2，v3.6）— 并行 CPU 采样进程数
+  - `--num-workers 整数`（默认 0，v3.6）— 并行 CPU 采样进程数
   - `--rollout-steps-per-worker 整数`（默认 200，v3.6）— 每个 worker 每批推送的步数
 - 日志/保存
   - `--checkpoint-interval 整数`（默认 1000）
