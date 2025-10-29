@@ -2,6 +2,7 @@ import pygame
 import random
 from typing import Tuple, List
 import numpy as np
+from collections import deque
 
 class SnakeGame:
     """
@@ -25,6 +26,12 @@ class SnakeGame:
         
         # Generate first food
         self._spawn_food()
+        # Track a potential for reachable-area ratio to use as shaping
+        try:
+            head_x, head_y = self.snake[-1]
+            self._last_area_ratio = self._reachable_area_ratio(head_x, head_y)
+        except Exception:
+            self._last_area_ratio = 0.0
     
     def _spawn_food(self):
         """Generate food at a random position that's not on the snake"""
@@ -178,39 +185,51 @@ class SnakeGame:
         
         # Calculate IMPROVED reward shaping with balanced safety awareness
         reward = 0.0
-        
-        # 1. Distance to food reward (encourage moving closer to food)
-        # 用途：引导AI朝食物方向移动，而不是漫无目的游走
+
+        # 1) Potential-based shaping for distance to food (smooth and policy-friendly)
+        #    Adds small positive reward when Manhattan distance decreases; small negative otherwise
         if self.food:
             new_dist_to_food = abs(new_x - self.food[0]) + abs(new_y - self.food[1])
-            # 如果距离变近，给正奖励；变远，给负奖励
-            if new_dist_to_food < old_dist_to_food:
-                reward += 3.0  # 靠近食物：+3
-            elif new_dist_to_food == old_dist_to_food:
-                reward -= 0.5  # 既不靠近也不远离：轻微惩罚（防止原地打转）
+            reward += 0.2 * (old_dist_to_food - new_dist_to_food)
+
+            # 1a) Food reachability and shortest-path shaping (BFS on 20x20 is cheap)
+            #     Penalize if food becomes unreachable; reward if shortest path gets shorter
+            sp_before = self._shortest_path_len((head_x, head_y), self.food,
+                                                allow_tail_pos=self.snake[0] if len(self.snake) > 1 else None,
+                                                occupied=set(self.snake[:-1]))  # before move occupancy
+            sp_after = self._shortest_path_len((new_x, new_y), self.food,
+                                               allow_tail_pos=None,
+                                               occupied=set(self.snake))
+            if sp_after is None:
+                reward -= 2.0
             else:
-                reward -= 1.0  # 远离食物：-1（从-2降低到-1，避免吃完后无所适从）
+                if sp_before is not None:
+                    delta_sp = sp_before - sp_after
+                    if delta_sp > 0:
+                        reward += min(1.0, 0.2 * delta_sp)
         
-        # 2. Safety/Space reward (防止吃豆后撞自己，但对长蛇更宽容)
+        # 2) Safety/Space reward (prevent dead-ends; a bit stricter for very long snakes)
         # 用途：只惩罚真正危险的情况，鼓励继续追食物
         safe_space = self._count_safe_space(new_x, new_y)
         if safe_space == 0:
             reward -= 10.0  # 死路！严重惩罚
         elif safe_space == 1:
-            # 只有一条路：只有在蛇很长时才轻微惩罚，且惩罚逐渐降低
-            if len(self.snake) > 8:  # 从>5改为>8，更宽容
-                reward -= 0.3  # 从-0.5降低到-0.3
+            # Single path: penalize more when snake is long to avoid funnels
+            if len(self.snake) >= 12:
+                reward -= 0.8
+            elif len(self.snake) > 8:
+                reward -= 0.3
             elif len(self.snake) > 5:
-                reward -= 0.1  # 中等长度时只轻微惩罚
+                reward -= 0.1
         # safe_space >= 2: 不惩罚，鼓励AI继续追食物
         
-        # 3. Danger awareness (只在极度危险时才惩罚)
+        # 3) Danger awareness (only punish when fully surrounded)
         # 用途：检测周围完全被包围的情况
         danger_level = self._check_danger_ahead(new_x, new_y)
         if danger_level == 4:  # 只有四面都危险时才惩罚（从>=3改为==4）
             reward -= 5.0  # 四面楚歌，严重惩罚
         
-        # 4. Survival penalty (encourage efficiency, don't waste time)
+        # 4) Survival penalty (encourage efficiency, don't waste time)
         # 用途：防止AI原地打转或无限游走
         # 蛇越长，惩罚反而越轻（避免长蛇过于急躁）
         if len(self.snake) <= 5:
@@ -220,7 +239,7 @@ class SnakeGame:
             survival_penalty = 0.01 / (1 + (len(self.snake) - 5) * 0.1)
         reward -= survival_penalty
         
-        # 5. Wall proximity penalty (只在非常接近墙时才惩罚)
+        # 5) Wall proximity penalty (only when very close to wall)
         # 用途：避免贴墙走，但不阻止正常移动
         dist_to_walls = min(new_x, self.grid_size - 1 - new_x, 
                            new_y, self.grid_size - 1 - new_y)
@@ -229,8 +248,83 @@ class SnakeGame:
         elif dist_to_walls == 1:
             reward -= 0.5  # 距离墙1格：-0.5（轻微惩罚）
         # dist_to_walls >= 2: 不惩罚
+
+        # 6) Global reachable-area potential shaping (small weight)
+        #    Reward increases when the fraction of free cells reachable from head grows
+        try:
+            area_ratio_after = self._reachable_area_ratio(new_x, new_y)
+            delta_area = area_ratio_after - getattr(self, '_last_area_ratio', 0.0)
+            reward += 0.5 * delta_area
+            self._last_area_ratio = area_ratio_after
+        except Exception:
+            pass
         
         return (reward, False, False)
+
+    # ---------- Helper utilities for shaping ----------
+    def _neighbors(self, x: int, y: int):
+        for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
+                yield nx, ny
+
+    def _shortest_path_len(self,
+                            start: Tuple[int, int],
+                            goal: Tuple[int, int],
+                            occupied: set,
+                            allow_tail_pos: Tuple[int, int] | None = None) -> int | None:
+        """Breadth-first search shortest path length avoiding occupied cells.
+        - occupied: set of snake cells to avoid (walls are implicit by bounds)
+        - allow_tail_pos: an optional cell treated as free (the tail will move)
+        Returns None if unreachable.
+        """
+        if goal is None:
+            return None
+        if start == goal:
+            return 0
+        q = deque()
+        q.append((start[0], start[1], 0))
+        visited = set([start])
+        goal_x, goal_y = goal
+        while q:
+            x, y, d = q.popleft()
+            for nx, ny in self._neighbors(x, y):
+                if (nx, ny) in visited:
+                    continue
+                blocked = (nx, ny) in occupied and (nx, ny) != (goal_x, goal_y) and (allow_tail_pos is None or (nx, ny) != allow_tail_pos)
+                if blocked:
+                    continue
+                if (nx, ny) == (goal_x, goal_y):
+                    return d + 1
+                visited.add((nx, ny))
+                q.append((nx, ny, d + 1))
+        return None
+
+    def _reachable_area_ratio(self, head_x: int, head_y: int) -> float:
+        """Compute ratio of free cells reachable from the head position.
+        Snake body is considered blocked; food is considered free.
+        """
+        occupied = set(self.snake)
+        free_total = self.grid_size * self.grid_size - len(occupied)
+        if free_total <= 0:
+            return 0.0
+        visited = set()
+        q = deque()
+        # Start exploring from head into free neighbors
+        for nx, ny in self._neighbors(head_x, head_y):
+            if (nx, ny) not in occupied or (self.food and (nx, ny) == self.food):
+                visited.add((nx, ny))
+                q.append((nx, ny))
+        while q:
+            x, y = q.popleft()
+            for nx, ny in self._neighbors(x, y):
+                if (nx, ny) in visited:
+                    continue
+                if (nx, ny) in occupied and not (self.food and (nx, ny) == self.food):
+                    continue
+                visited.add((nx, ny))
+                q.append((nx, ny))
+        return len(visited) / free_total
     
     def _count_safe_space(self, x: int, y: int) -> int:
         """
@@ -278,6 +372,11 @@ class SnakeGame:
         self.snake_length = 1
         self.death_reason = None  # 记录死因
         self._spawn_food()
+        try:
+            head_x, head_y = self.snake[-1]
+            self._last_area_ratio = self._reachable_area_ratio(head_x, head_y)
+        except Exception:
+            self._last_area_ratio = 0.0
     
     def render(self):
         """
