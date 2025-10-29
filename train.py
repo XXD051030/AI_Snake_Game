@@ -15,8 +15,7 @@ import sys
 import argparse
 import torch
 import random
-import multiprocessing as mp
-from queue import Empty as QueueEmpty
+ 
 import platform
 import subprocess
 try:
@@ -25,68 +24,7 @@ except Exception:  # psutil optional; degrade gracefully
     psutil = None
 
 
-def rollout_worker(worker_id: int,
-                   grid_size: int,
-                   epsilon: float,
-                   rollout_steps: int,
-                   result_queue: mp.Queue,
-                   stop_event: mp.Event,
-                   state_size: int,
-                   action_size: int,
-                   model_state_dict: dict | None):
-    """Collect transitions in a separate process and push to result_queue.
-    Uses CPU only; epsilon is fixed (no decay) to keep behavior stable.
-    """
-    try:
-        # Local imports to avoid CUDA context in worker
-        from game import SnakeGame as _SnakeGame
-        from ai_agent import DQNAgent as _DQNAgent
-        import numpy as _np
-
-        game = _SnakeGame(grid_size=grid_size)
-        agent = _DQNAgent(state_size, action_size, use_gpu=False,
-                          epsilon_start=epsilon, epsilon_min=epsilon, epsilon_decay=1.0)
-        if model_state_dict is not None:
-            try:
-                agent.q_network.load_state_dict(model_state_dict)
-                agent.target_network.load_state_dict(agent.q_network.state_dict())
-            except Exception:
-                pass
-
-        while not stop_event.is_set():
-            transitions = []
-            steps_collected = 0
-            episodes_done = 0
-            episode_scores = []
-
-            # Collect up to rollout_steps transitions (across one or more episodes)
-            while steps_collected < rollout_steps and not stop_event.is_set():
-                game.reset()
-                done = False
-                while not done and steps_collected < rollout_steps:
-                    state = game.get_state()
-                    action = agent.act(state)
-                    reward, done, _ = game.move(action)
-                    next_state = game.get_state() if not done else _np.zeros_like(state)
-                    transitions.append((state, int(action), float(reward), next_state, bool(done)))
-                    steps_collected += 1
-                episodes_done += 1
-                episode_scores.append(max(0, game.snake_length - 1))
-
-            # Push a batch to the parent process
-            try:
-                result_queue.put_nowait({
-                    'transitions': transitions,
-                    'episodes_done': episodes_done,
-                    'scores': episode_scores,
-                    'steps': steps_collected,
-                    'worker_id': worker_id,
-                })
-            except Exception:
-                # If queue is full, drop this batch and continue
-                pass
-    except KeyboardInterrupt:
-        pass
+ 
 
 def train_snake_ai(
     episodes=100000,
@@ -109,8 +47,6 @@ def train_snake_ai(
     grid_size: int = 20,
     max_steps_per_episode: int = 1000,
     save_prefix: str = "snake_model_",
-    num_workers: int = 0,
-    rollout_steps_per_worker: int = 200,
 ):
     """
     Train the AI agent to play Snake
@@ -324,8 +260,6 @@ def train_snake_ai(
         "grid_size": grid_size,
         "max_steps_per_episode": max_steps_per_episode,
         "save_prefix": save_prefix,
-        "num_workers": num_workers,
-        "rollout_steps_per_worker": rollout_steps_per_worker,
     }
 
     system_info = {
@@ -357,10 +291,7 @@ def train_snake_ai(
             "cuda": cuda_ver,
             "pytorch": torch_ver,
         },
-        "parallel": {
-            "num_workers": num_workers,
-            "effective_units": (num_workers or 0) + 1,
-        }
+        "parallel": None
     }
 
     # Print consolidated system info to console (after variables are defined)
@@ -373,7 +304,7 @@ def train_snake_ai(
         print(f"Memory: total={mem_total_gb:.2f}GB available={mem_avail_gb:.2f}GB")
     if gpu_count:
         print(f"GPU: {gpu_name or 'n/a'} | vram={gpu_vram_gb:.1f}GB | capability={gpu_capability or 'n/a'} | CUDA={cuda_ver or 'n/a'} | torch={torch_ver}")
-    print(f"Parallel: num_workers={num_workers} | torch_threads={torch.get_num_threads()} | affinity={affinity_cores or 'n/a'}")
+    print(f"Execution: single-process | torch_threads={torch.get_num_threads()} | affinity={affinity_cores or 'n/a'}")
 
     # Initialize log data
     log_data = {
@@ -399,52 +330,19 @@ def train_snake_ai(
         f.write(f"# Memory: total={mem_total_gb:.2f}GB available={mem_avail_gb:.2f}GB\n" if (mem_total_gb and mem_avail_gb) else "")
         if gpu_count:
             f.write(f"# GPU: {gpu_name or 'n/a'} | vram={gpu_vram_gb:.1f}GB | capability={gpu_capability or 'n/a'} | CUDA={cuda_ver or 'n/a'} | torch={torch_ver}\n")
-        f.write(f"# Parallel: num_workers={num_workers} (effective_units={system_info['parallel']['effective_units']})\n")
         # Config block
         f.write("# Config:\n")
         for k in [
             "mode","model_path","reset_epsilon","episodes","visualize","batch_size","lr","gamma",
             "epsilon_start","epsilon_min","epsilon_decay","target_update","replay_size",
             "checkpoint_interval","log_interval","device_arg","seed","grid_size",
-            "max_steps_per_episode","save_prefix","num_workers","rollout_steps_per_worker"
+            "max_steps_per_episode","save_prefix"
         ]:
             f.write(f"#   {k}={run_config[k]}\n")
         f.write("# Format: episode, avg_score, max_score, epsilon, memory_size, time_last_100, time_total, time_remaining, eps_per_s, steps_per_s\n")
         f.write("# episode,avg_score,max_score,epsilon,memory_size,time_last_100,time_total,time_remaining,eps_per_s,steps_per_s\n")
     
-    # Start rollout workers (CPU)
-    workers = []
-    result_queue = None
-    stop_event = None
-    if num_workers and num_workers > 0:
-        try:
-            ctx = mp.get_context('spawn')
-            result_queue = ctx.Queue(maxsize=max(8, num_workers * 2))
-            stop_event = ctx.Event()
-            # Use a moderate fixed epsilon for data diversity
-            worker_epsilon = max(0.05, min(0.2, epsilon_min if mode == 'resume' and reset_epsilon is None else epsilon_start))
-            model_state_dict = agent.q_network.state_dict()
-            for wid in range(num_workers):
-                p = ctx.Process(target=rollout_worker, args=(
-                    wid,
-                    grid_size,
-                    worker_epsilon,
-                    rollout_steps_per_worker,
-                    result_queue,
-                    stop_event,
-                    state_size,
-                    action_size,
-                    model_state_dict
-                ))
-                p.daemon = True
-                p.start()
-                workers.append(p)
-            print(f"Rollout workers started: {len(workers)} (epsilon={worker_epsilon})")
-        except Exception as e:
-            print(f"Warning: Failed to start workers ({e}), continuing without parallel rollouts")
-            workers = []
-            result_queue = None
-            stop_event = None
+    # Single-process execution (no rollout workers)
 
     # Track time
     start_time = time.time()
@@ -522,20 +420,7 @@ def train_snake_ai(
         all_scores.append(scores[-1])
         total_steps += steps
         
-        # Drain worker queue (ingest parallel experiences)
-        if result_queue is not None:
-            drained = 0
-            while drained < 4:  # avoid spending too long
-                try:
-                    item = result_queue.get_nowait()
-                except QueueEmpty:
-                    break
-                except Exception:
-                    break
-                transitions = item.get('transitions', [])
-                for (s, a, r, ns, d) in transitions:
-                    agent.remember(s, a, r, ns, d)
-                drained += 1
+        # No parallel experience ingestion in single-process mode
 
         # Update nested progress bar (for current chunk)
         if episode % log_interval == 0:
@@ -645,24 +530,7 @@ def train_snake_ai(
         nested_pbar.close()
     pbar.close()
     
-    # Stop rollout workers
-    if stop_event is not None:
-        try:
-            stop_event.set()
-        except Exception:
-            pass
-    if workers:
-        for p in workers:
-            try:
-                p.join(timeout=1.0)
-            except Exception:
-                pass
-        for p in workers:
-            try:
-                if p.is_alive():
-                    p.terminate()
-            except Exception:
-                pass
+    # No workers to stop in single-process mode
 
     # Final save
     os.makedirs("models", exist_ok=True)
@@ -770,8 +638,7 @@ if __name__ == "__main__":
     parser.add_argument("--epsilon-decay", type=float, default=0.9995, help="Epsilon decay factor")
     parser.add_argument("--target-update", type=int, default=50, help="Target network update interval (episodes)")
     parser.add_argument("--replay-size", type=int, default=100000, help="Replay buffer size")
-    parser.add_argument("--num-workers", type=int, default=0, help="Number of parallel CPU rollout workers")
-    parser.add_argument("--rollout-steps-per-worker", type=int, default=200, help="Transitions per worker batch push")
+    
     
     # Logging / saving
     parser.add_argument("--checkpoint-interval", type=int, default=1000, help="Save checkpoint every N episodes")
@@ -807,7 +674,5 @@ if __name__ == "__main__":
         grid_size=args.grid_size,
         max_steps_per_episode=args.max_steps_per_episode,
         save_prefix=args.save_prefix,
-        num_workers=args.num_workers,
-        rollout_steps_per_worker=args.rollout_steps_per_worker,
     )
 

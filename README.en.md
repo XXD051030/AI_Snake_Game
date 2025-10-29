@@ -43,11 +43,8 @@ Dropout(0.2) after first two hidden layers
 #### Training Progress
 ![Training Progress](graphs/training_progress.png)
 
-### v3.6 Highlights — Parallel Rollouts (Multiprocessing)
-- Default: `--num-workers 0` (single-process; set >0 to enable parallel rollouts)
-- Enable parallel: set `--num-workers > 0`
-- Throughput: significantly higher steps/s and more frequent training updates; episodes/s may drop slightly
-- Notes: Delete key works in the main process; workers are cleaned up on exit
+### Notes
+- Training runs in a single process by default (simpler and stable on most setups).
 
 ## ⚙️ Training Configuration (Current)
 - Episodes: 100,000
@@ -113,10 +110,7 @@ python train.py \
   --grid-size 20 \
   --max-steps-per-episode 1200
 
-# v3.6 parallel rollouts example
-python train.py --device cuda \
-  --num-workers 4 \
-  --rollout-steps-per-worker 300
+# (removed) parallel rollout examples — training is single-process by default
 ```
 
 ### All CLI options (summary)
@@ -135,8 +129,7 @@ python train.py --device cuda \
   - `--epsilon-decay FLOAT` (default 0.9995)
   - `--target-update INT` (default 50)
   - `--replay-size INT` (default 100000)
-  - `--num-workers INT` (default 0, v3.6) — parallel CPU rollout workers
-  - `--rollout-steps-per-worker INT` (default 200, v3.6) — transitions per batch from each worker
+  
 - Logging / saving
   - `--checkpoint-interval INT` (default 1000)
   - `--log-interval INT` (default 100)
