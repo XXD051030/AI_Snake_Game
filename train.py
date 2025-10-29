@@ -596,7 +596,7 @@ def plot_training_progress(scores, episodes):
     
     plt.subplot(1, 2, 1)
     plt.plot(scores, alpha=0.6, color='blue')
-    plt.title('Training Progress - All Scores')
+    plt.title('Episode Score (score = snake length − 1)')
     plt.xlabel('Episode')
     plt.ylabel('Score')
     plt.grid(True, alpha=0.3)
@@ -609,7 +609,7 @@ def plot_training_progress(scores, episodes):
         moving_avg.append(np.mean(scores[i-window:i]))
     
     plt.plot(moving_avg, color='red', linewidth=2)
-    plt.title(f'Moving Average (window={window})')
+    plt.title(f'Average Episode Score (window={window})')
     plt.xlabel('Episode')
     plt.ylabel('Average Score')
     plt.grid(True, alpha=0.3)
